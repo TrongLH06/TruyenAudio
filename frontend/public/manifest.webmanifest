@@ -1,0 +1,18 @@
+{
+  "name": "Lười Truyện — Tự Lướt & Thuyết Minh AI",
+  "short_name": "LườiTruyện",
+  "description": "Đọc truyện tranh tự lướt đồng bộ giọng đọc và video review 16:9 tối ưu cho di động.",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0D0F12",
+  "theme_color": "#0D0F12",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

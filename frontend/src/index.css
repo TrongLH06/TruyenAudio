@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+@theme {
+  /* Prism Comic Engine Color Tokens (from Stitch) */
+  --color-surface-bg: #0D0F12;
+  --color-surface: #111317;
+  --color-surface-dim: #111317;
+  --color-surface-bright: #37393e;
+  --color-surface-card: #181B20;
+  --color-surface-card-hover: #20252C;
+  --color-surface-container-lowest: #0c0e12;
+  --color-surface-container-low: #1a1c20;
+  --color-surface-container: #1e2024;
+  --color-surface-container-high: #282a2e;
+  --color-surface-container-highest: #333539;
+  --color-border-subtle: #262B34;
+
+  --color-text-primary: #F4F6F8;
+  --color-text-secondary: #9EABB9;
+  --color-on-surface: #e2e2e8;
+  --color-on-surface-variant: #bfc7d5;
+  --color-outline: #8a919e;
+  --color-outline-variant: #404752;
+
+  --color-primary: #a1c9ff;
+  --color-on-primary: #00325a;
+  --color-primary-container: #1d94f6;
+  --color-on-primary-container: #002b4f;
+  --color-primary-fixed: #d2e4ff;
+  --color-inverse-primary: #0061a7;
+
+  --color-secondary: #ffb2be;
+  --color-on-secondary: #660025;
+  --color-secondary-container: #d70357;
+  --color-secondary-fixed: #ffd9de;
+
+  --color-tertiary: #ffb68b;
+  --color-on-tertiary: #522300;
+  --color-tertiary-container: #e76e00;
+  --color-on-tertiary-container: #481e00;
+
+  --color-accent-green: #2FB344;
+  --color-badge-hot-bg: #FF3366;
+  --color-badge-new-bg: #008CEE;
+  --color-error: #ffb4ab;
+
+  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-label: "Space Grotesk", system-ui, sans-serif;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: #0D0F12;
+    color: #e2e2e8;
+    overflow-x: hidden;
+    overscroll-behavior: none;
+  }
+
+  button,
+  a,
+  select,
+  input,
+  textarea {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button,
+  a,
+  select {
+    touch-action: manipulation;
+  }
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.comic-card-contain {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 310px;
+}
+
+.comic-page-contain {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 1100px;
+}
+
+.chapter-row-contain {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 48px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.font-label {
+  font-family: "Space Grotesk", system-ui, sans-serif;
+}
+
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 500, 'GRAD' 0, 'opsz' 24;
+  user-select: none;
+}
+
+.material-symbols-filled {
+  font-variation-settings: 'FILL' 1, 'wght' 500, 'GRAD' 0, 'opsz' 24;
+  user-select: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Custom sleek dark scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #0D0F12;
+}
+::-webkit-scrollbar-thumb {
+  background: #282a2e;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #404752;
+}

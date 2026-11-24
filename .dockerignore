@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+backend/.venv
+backend/.env
+backend/storage
+frontend
+node_modules
+**/__pycache__
+*.pyc
+*.pyo
+*.db
+*.log
+.vscode
+.DS_Store
+Thumbs.db
