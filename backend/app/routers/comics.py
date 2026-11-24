@@ -154,7 +154,7 @@ async def browse_external_comics(
         return await list_hinet_comics(query=q, genre=genre, page=page)
     if source == "otruyen":
         return await list_otruyen_comics(q)
-    return await list_mangadex_comics(q)
+    return await list_mangadex_comics(query=q, genre=genre, page=page)
 
 
 @router.get("/proxy-image")

@@ -375,6 +375,8 @@ _HINET_BLOCKED_TTL = 600.0  # Skip repeated blocked probes from cloud IPs for 10
 _MANGADEX_TAGS_CACHE: tuple[float, dict[str, str], list[GenreItem]] | None = None
 _MANGADEX_TAGS_TTL = 3600.0
 _MANGADEX_CHAPTER_LANG_CACHE: dict[str, str] = {}
+_MANGADEX_DETAIL_CACHE: dict[str, tuple[float, ComicDetail]] = {}
+_MANGADEX_DETAIL_TTL = 180.0
 
 
 _SEO_SENTENCE_MARKERS = (
@@ -1164,7 +1166,11 @@ async def _get_mangadex_tags() -> tuple[dict[str, str], list[GenreItem]]:
     return name_to_id, genres
 
 
-def _parse_mangadex_summaries(items: list[dict], vietnamese_mode: bool = False) -> list[ComicSummary]:
+def _parse_mangadex_summaries(
+    items: list[dict],
+    vietnamese_mode: bool = False,
+    latest_ch_map: dict[str, str] | None = None,
+) -> list[ComicSummary]:
     results: list[ComicSummary] = []
     for item in items:
         manga_id = item.get("id", "")
@@ -1183,11 +1189,17 @@ def _parse_mangadex_summaries(items: list[dict], vietnamese_mode: bool = False) 
                 break
         cover_raw = f"https://uploads.mangadex.org/covers/{manga_id}/{cover_file}.256.jpg" if cover_file else ""
 
+        mapped_ch = (latest_ch_map or {}).get(manga_id, "")
         if vietnamese_mode:
-            latest_label = f"Ch. {last_ch}" if last_ch else "Tiếng Việt"
+            if mapped_ch:
+                latest_label = mapped_ch
+            elif last_ch:
+                latest_label = f"Ch. {last_ch}"
+            else:
+                latest_label = "Tiếng Việt"
             lang = "vi"
         else:
-            latest_label = f"Gốc: {orig_lang.upper()}"
+            latest_label = mapped_ch or (f"Ch. {last_ch}" if last_ch else f"Gốc: {orig_lang.upper()}")
             lang = orig_lang
 
         results.append(
@@ -1206,6 +1218,17 @@ def _parse_mangadex_summaries(items: list[dict], vietnamese_mode: bool = False) 
 
 async def get_mangadex_vi_home() -> HiNetHomeResponse:
     client = get_shared_http_client()
+    # Query the live Vietnamese chapter feed with includeExternalUrl=0 & includeEmptyPages=0
+    # so every manga in featured/top_month/top_week/top_day is guaranteed to have real hosted VI chapters.
+    ch_feed_params: list[tuple[str, str]] = [
+        ("limit", "100"),
+        ("translatedLanguage[]", "vi"),
+        ("includeExternalUrl", "0"),
+        ("includeEmptyPages", "0"),
+        ("contentRating[]", "safe"),
+        ("contentRating[]", "suggestive"),
+        ("order[readableAt]", "desc"),
+    ]
     latest_params: list[tuple[str, str]] = [
         ("limit", "36"),
         ("includes[]", "cover_art"),
@@ -1215,35 +1238,83 @@ async def get_mangadex_vi_home() -> HiNetHomeResponse:
         ("contentRating[]", "suggestive"),
         ("order[latestUploadedChapter]", "desc"),
     ]
-    popular_params: list[tuple[str, str]] = [
-        ("limit", "18"),
-        ("includes[]", "cover_art"),
-        ("availableTranslatedLanguage[]", "vi"),
-        ("hasAvailableChapters", "true"),
-        ("contentRating[]", "safe"),
-        ("contentRating[]", "suggestive"),
-        ("order[followedCount]", "desc"),
-    ]
 
-    latest_resp, popular_resp, tags_res = await asyncio.gather(
+    ch_feed_resp, latest_resp, tags_res = await asyncio.gather(
+        client.get(f"{MANGADEX_BASE}/chapter", params=ch_feed_params, headers=DEFAULT_HEADERS),
         client.get(f"{MANGADEX_BASE}/manga", params=latest_params, headers=DEFAULT_HEADERS),
-        client.get(f"{MANGADEX_BASE}/manga", params=popular_params, headers=DEFAULT_HEADERS),
         _get_mangadex_tags(),
         return_exceptions=True,
     )
 
-    if isinstance(latest_resp, Exception):
-        raise latest_resp
-    latest_resp.raise_for_status()
-    latest_items = latest_resp.json().get("data") or []
-    latest = _parse_mangadex_summaries(latest_items, vietnamese_mode=True)
+    active_manga_ids: list[str] = []
+    latest_ch_map: dict[str, str] = {}
+    if not isinstance(ch_feed_resp, Exception) and ch_feed_resp.status_code == 200:
+        for ch_item in ch_feed_resp.json().get("data") or []:
+            c_attrs = ch_item.get("attributes") or {}
+            if c_attrs.get("externalUrl") or int(c_attrs.get("pages") or 0) <= 0:
+                continue
+            ch_num = str(c_attrs.get("chapter") or "").strip()
+            mid = ""
+            for rel in ch_item.get("relationships") or []:
+                if rel.get("type") == "manga":
+                    mid = rel.get("id") or ""
+                    break
+            if mid:
+                if mid not in latest_ch_map and ch_num:
+                    latest_ch_map[mid] = f"Ch. {ch_num}"
+                if mid not in active_manga_ids:
+                    active_manga_ids.append(mid)
 
-    popular: list[ComicSummary] = []
-    if not isinstance(popular_resp, Exception) and popular_resp.status_code == 200:
-        popular_items = popular_resp.json().get("data") or []
-        popular = _parse_mangadex_summaries(popular_items, vietnamese_mode=True)
-    if not popular:
-        popular = latest[:18]
+    verified_popular: list[ComicSummary] = []
+    verified_recent: list[ComicSummary] = []
+    if active_manga_ids:
+        id_params: list[tuple[str, str]] = [
+            ("limit", str(min(60, len(active_manga_ids)))),
+            ("includes[]", "cover_art"),
+            ("contentRating[]", "safe"),
+            ("contentRating[]", "suggestive"),
+            ("order[followedCount]", "desc"),
+        ]
+        for mid in active_manga_ids[:60]:
+            id_params.append(("ids[]", mid))
+        try:
+            pop_resp = await client.get(f"{MANGADEX_BASE}/manga", params=id_params, headers=DEFAULT_HEADERS)
+            if pop_resp.status_code == 200:
+                pop_items = pop_resp.json().get("data") or []
+                verified_popular = _parse_mangadex_summaries(
+                    pop_items,
+                    vietnamese_mode=True,
+                    latest_ch_map=latest_ch_map,
+                )
+                by_id = {c.id: c for c in verified_popular}
+                verified_recent = [by_id[mid] for mid in active_manga_ids if mid in by_id]
+        except Exception:
+            logger.warning("Failed to fetch verified popular MangaDex titles from chapter feed")
+
+    broad_latest: list[ComicSummary] = []
+    if not isinstance(latest_resp, Exception) and latest_resp.status_code == 200:
+        latest_items = latest_resp.json().get("data") or []
+        broad_latest = _parse_mangadex_summaries(
+            latest_items,
+            vietnamese_mode=True,
+            latest_ch_map=latest_ch_map,
+        )
+    elif not verified_recent:
+        if isinstance(latest_resp, Exception):
+            raise latest_resp
+        latest_resp.raise_for_status()
+
+    # Merge verified recent titles first, then fill up to 36 from broad_latest without duplicates
+    seen_latest: set[str] = set()
+    latest: list[ComicSummary] = []
+    for item in [*verified_recent, *broad_latest]:
+        if item.id not in seen_latest:
+            seen_latest.add(item.id)
+            latest.append(item)
+        if len(latest) >= 36:
+            break
+
+    popular = verified_popular if verified_popular else latest[:18]
 
     genres: list[GenreItem] = []
     if not isinstance(tags_res, Exception) and isinstance(tags_res, tuple):
@@ -1254,15 +1325,16 @@ async def get_mangadex_vi_home() -> HiNetHomeResponse:
         latest=latest[:36],
         top_month=popular[:7],
         top_week=popular[7:14] or popular[:7],
-        top_day=latest[:7],
+        top_day=verified_recent[:7] or latest[:7],
         genres=genres[:16],
     )
 
 
 async def list_mangadex_vi_comics(query: str = "", genre: str = "", page: int = 1) -> list[ComicSummary]:
-    offset = (max(1, page) - 1) * 24
+    page_size = 36
+    offset = (max(1, page) - 1) * page_size
     params: list[tuple[str, str]] = [
-        ("limit", "24"),
+        ("limit", str(page_size)),
         ("offset", str(offset)),
         ("includes[]", "cover_art"),
         ("availableTranslatedLanguage[]", "vi"),
@@ -1321,9 +1393,17 @@ async def get_mangadex_chapter_language(chapter_id: str) -> str:
         return "vi"
 
 
-async def list_mangadex_comics(query: str = "", only_vietnamese: bool = False) -> list[ComicSummary]:
+async def list_mangadex_comics(
+    query: str = "",
+    only_vietnamese: bool = False,
+    genre: str = "",
+    page: int = 1,
+) -> list[ComicSummary]:
+    page_size = 36
+    offset = (max(1, page) - 1) * page_size
     params: list[tuple[str, str]] = [
-        ("limit", "20"),
+        ("limit", str(page_size)),
+        ("offset", str(offset)),
         ("includes[]", "cover_art"),
         ("hasAvailableChapters", "true"),
         ("contentRating[]", "safe"),
@@ -1334,6 +1414,21 @@ async def list_mangadex_comics(query: str = "", only_vietnamese: bool = False) -
         params.append(("availableTranslatedLanguage[]", "vi"))
     if query.strip():
         params.append(("title", query.strip()))
+
+    g_norm = genre.strip()
+    if g_norm:
+        tag_uuid = ""
+        if _UUID_RE.match(g_norm):
+            tag_uuid = g_norm
+        else:
+            try:
+                tag_map, _ = await _get_mangadex_tags()
+                tag_name = _HINET_TO_MD_TAG_NAMES.get(g_norm.lower(), g_norm.replace("-", " ").lower())
+                tag_uuid = tag_map.get(tag_name, "")
+            except Exception:
+                tag_uuid = ""
+        if tag_uuid:
+            params.append(("includedTags[]", tag_uuid))
 
     try:
         client = get_shared_http_client()
@@ -1388,6 +1483,20 @@ def _extract_mangadex_chapters(feed_data: list[dict]) -> list[ChapterItem]:
 
 
 async def get_mangadex_detail(manga_id: str) -> ComicDetail:
+    now = time.monotonic()
+    cached = _MANGADEX_DETAIL_CACHE.get(manga_id)
+    if cached and (now - cached[0]) < _MANGADEX_DETAIL_TTL:
+        return cached[1]
+
+    base_vi_params: list[tuple[str, str]] = [
+        ("limit", "500"),
+        ("order[chapter]", "asc"),
+        ("translatedLanguage[]", "vi"),
+        ("includeExternalUrl", "0"),
+        ("includeEmptyPages", "0"),
+        ("contentRating[]", "safe"),
+        ("contentRating[]", "suggestive"),
+    ]
     try:
         client = get_shared_http_client()
         detail_resp, vi_feed_resp = await asyncio.gather(
@@ -1398,29 +1507,42 @@ async def get_mangadex_detail(manga_id: str) -> ComicDetail:
             ),
             client.get(
                 f"{MANGADEX_BASE}/manga/{quote(manga_id, safe='')}/feed",
-                params=[
-                    ("limit", "500"),
-                    ("order[chapter]", "asc"),
-                    ("translatedLanguage[]", "vi"),
-                    ("includeExternalUrl", "0"),
-                    ("includeEmptyPages", "0"),
-                    ("contentRating[]", "safe"),
-                    ("contentRating[]", "suggestive"),
-                ],
+                params=base_vi_params,
                 headers=DEFAULT_HEADERS,
             ),
         )
         detail_resp.raise_for_status()
         vi_feed_resp.raise_for_status()
         detail_data = detail_resp.json().get("data") or {}
-        vi_feed_data = vi_feed_resp.json().get("data") or []
+        vi_feed_json = vi_feed_resp.json()
+        vi_feed_data = list(vi_feed_json.get("data") or [])
+        vi_total = int(vi_feed_json.get("total") or len(vi_feed_data))
+
+        if vi_total > 500:
+            extra_offsets = [off for off in (500, 1000, 1500, 2000) if off < min(vi_total, 2500)]
+            if extra_offsets:
+                extra_resps = await asyncio.gather(
+                    *[
+                        client.get(
+                            f"{MANGADEX_BASE}/manga/{quote(manga_id, safe='')}/feed",
+                            params=[*base_vi_params, ("offset", str(off))],
+                            headers=DEFAULT_HEADERS,
+                        )
+                        for off in extra_offsets
+                    ],
+                    return_exceptions=True,
+                )
+                for r in extra_resps:
+                    if not isinstance(r, Exception) and r.status_code == 200:
+                        vi_feed_data.extend(r.json().get("data") or [])
+
         chapters = _extract_mangadex_chapters(vi_feed_data)
 
         if not chapters:
             fallback_feed_resp = await client.get(
                 f"{MANGADEX_BASE}/manga/{quote(manga_id, safe='')}/feed",
                 params=[
-                    ("limit", "200"),
+                    ("limit", "500"),
                     ("order[chapter]", "asc"),
                     ("translatedLanguage[]", "en"),
                     ("translatedLanguage[]", "ja"),
@@ -1433,6 +1555,22 @@ async def get_mangadex_detail(manga_id: str) -> ComicDetail:
             )
             fallback_feed_resp.raise_for_status()
             chapters = _extract_mangadex_chapters(fallback_feed_resp.json().get("data") or [])
+
+        if not chapters:
+            any_lang_resp = await client.get(
+                f"{MANGADEX_BASE}/manga/{quote(manga_id, safe='')}/feed",
+                params=[
+                    ("limit", "500"),
+                    ("order[chapter]", "asc"),
+                    ("includeExternalUrl", "0"),
+                    ("includeEmptyPages", "0"),
+                    ("contentRating[]", "safe"),
+                    ("contentRating[]", "suggestive"),
+                ],
+                headers=DEFAULT_HEADERS,
+            )
+            if any_lang_resp.status_code == 200:
+                chapters = _extract_mangadex_chapters(any_lang_resp.json().get("data") or [])
     except Exception:
         logger.exception("Failed to fetch MangaDex detail for %s", manga_id)
         raise HTTPException(status_code=502, detail="Không tải được truyện từ MangaDex.")
@@ -1454,7 +1592,7 @@ async def get_mangadex_detail(manga_id: str) -> ComicDetail:
     cover_raw = f"https://uploads.mangadex.org/covers/{manga_id}/{cover_file}.512.jpg" if cover_file else ""
     tags = [_pick_localized((t.get("attributes") or {}).get("name")) for t in (attrs.get("tags") or [])]
 
-    return ComicDetail(
+    detail = ComicDetail(
         id=manga_id,
         source_type="mangadex",
         title=title,
@@ -1464,6 +1602,10 @@ async def get_mangadex_detail(manga_id: str) -> ComicDetail:
         tags=[t for t in tags if t][:10],
         chapters=chapters,
     )
+    if len(_MANGADEX_DETAIL_CACHE) > 256:
+        _MANGADEX_DETAIL_CACHE.clear()
+    _MANGADEX_DETAIL_CACHE[manga_id] = (now, detail)
+    return detail
 
 
 async def get_mangadex_chapter_pages(manga_id: str, chapter_id: str) -> ChapterPagesResponse:

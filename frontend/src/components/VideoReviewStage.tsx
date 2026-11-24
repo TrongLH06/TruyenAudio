@@ -109,6 +109,7 @@ export const VideoReviewStage = memo(
     );
 
     useEffect(() => {
+      imgHeightRef.current = stageHeightRef.current || 540;
       lastSceneFracRef.current = 0;
       applySceneTransform(0);
       if (currentUrl && lastUrlRef.current && currentUrl !== lastUrlRef.current) {

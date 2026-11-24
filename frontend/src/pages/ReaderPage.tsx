@@ -701,6 +701,24 @@ export function ReaderPage() {
 
             // Never scroll backward (min 10 px/s); smoothly catch up or ease to match exact panel position
             targetVelocity = Math.min(650, Math.max(10, feedForwardVel + errorPx * 1.45));
+          } else if (activePlaybackRef.current) {
+            // Silent panel (audio_url === null) or browser SpeechSynthesis fallback: track time progress smoothly
+            const effectiveStart =
+              pageAnchorStartRef.current !== null
+                ? Math.min(endY - 60, Math.max(startY, pageAnchorStartRef.current))
+                : startY;
+            const spanPx = Math.max(60, endY - effectiveStart);
+            const effectiveDurSec = Math.max(
+              1.6,
+              (activePlaybackRef.current.durationMs || 2600) / Math.max(0.75, speed) / 1000
+            );
+            const elapsedSec = Math.max(0, (now - voiceStartedAtRef.current) / 1000);
+            const timeFrac = Math.min(1, elapsedSec / effectiveDurSec);
+
+            const feedForwardVel = spanPx / effectiveDurSec;
+            const desiredY = effectiveStart + spanPx * timeFrac;
+            const errorPx = desiredY - scrollYFloatRef.current;
+            targetVelocity = Math.min(650, Math.max(12, feedForwardVel + errorPx * 1.45));
           }
         } else {
           // Fast cruise (2.5x..10x): steady rapid glide + smooth viewport-locked voice catch-up
@@ -1280,7 +1298,15 @@ export function ReaderPage() {
         audioRef.current.pause();
       }
 
-      pageAnchorStartRef.current = isFirstInSession ? window.scrollY : null;
+      if (isFirstInSession) {
+        pageAnchorStartRef.current = window.scrollY;
+      } else {
+        const { startY, endY } = getPageAnchors(pageIdx);
+        pageAnchorStartRef.current =
+          scrollYFloatRef.current >= startY - 140 && scrollYFloatRef.current < endY - 60
+            ? scrollYFloatRef.current
+            : startY;
+      }
       sceneProgressRef.current = 0;
       sceneAdvanceTriggeredRef.current = false;
       const initPct = chapter.pages.length > 0 ? (pageIdx / chapter.pages.length) * 100 : 0;
@@ -1534,6 +1560,25 @@ export function ReaderPage() {
       return () => window.clearTimeout(timer);
     }
   }, [loadingChapter, chapter]);
+
+  // Pre-warm current page OCR + Google TTS audio in 0-AI mode so tapping Play on mobile/desktop starts immediately
+  useEffect(() => {
+    if (loadingChapter || !chapter || chapter.pages.length === 0) return;
+    if (searchParams.get('autoplay') === '1' || activePlaybackRef.current) return;
+    if (engineRef.current !== 'ocr') return;
+    const startIdx = Math.min(Math.max(0, currentPageRef.current), chapter.pages.length - 1);
+    const timer = window.setTimeout(() => {
+      if (activePlaybackRef.current) return;
+      void ensurePageNarration(startIdx, demoMode, mode, 'ocr', voiceRef.current, 2)
+        .then((res) => {
+          if (res?.audio_url) {
+            void fetch(resolveBackendUrl(res.audio_url)).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [loadingChapter, chapter, demoMode, mode, ensurePageNarration, searchParams]);
 
   const handleTogglePlay = useCallback(async () => {
     if (isPlayingRef.current) {

@@ -59,7 +59,7 @@ export function HomePage({
   useEffect(() => {
     setMobileSearch(searchQuery);
     setPage(1);
-  }, [searchQuery, selectedGenre]);
+  }, [searchQuery, selectedGenre, activeSection]);
 
   // Load HiNetTruyen home bundle (featured, rankings, genres) + user sidebar
   useEffect(() => {
@@ -113,7 +113,12 @@ export function HomePage({
           setFeedComics(list);
         }
       } else if (activeSection === 'mangadex') {
-        const list = await api.browseExternalComics('mangadex', searchQuery);
+        const list = await api.browseExternalComics(
+          'mangadex',
+          searchQuery,
+          selectedGenre?.slug || '',
+          page
+        );
         setFeedComics(list);
       } else if (activeSection === 'local') {
         const list = await api.listLocalComics(searchQuery);
@@ -635,8 +640,8 @@ export function HomePage({
                   ))}
                 </div>
 
-                {/* Pagination bar for HiNetTruyen */}
-                {activeSection === 'hinettruyen' && (
+                {/* Pagination bar for Vietnamese & International catalogs */}
+                {(activeSection === 'hinettruyen' || activeSection === 'mangadex') && (
                   <div className="my-4 flex items-center justify-center gap-1.5">
                     <button
                       type="button"
@@ -651,7 +656,7 @@ export function HomePage({
                       <span>Trước</span>
                     </button>
 
-                    {[1, 2, 3, 4, 5].map((pNum) => (
+                    {Array.from({ length: 5 }, (_, idx) => Math.max(1, page - 2) + idx).map((pNum) => (
                       <button
                         key={pNum}
                         type="button"
@@ -671,11 +676,12 @@ export function HomePage({
 
                     <button
                       type="button"
+                      disabled={feedComics.length < 20}
                       onClick={() => {
                         setPage((p) => p + 1);
                         window.scrollTo({ top: 0, behavior: 'smooth' });
                       }}
-                      className="flex h-9 items-center gap-1 rounded-lg bg-surface-card px-3 text-xs font-semibold text-text-secondary transition hover:bg-surface-card-hover hover:text-text-primary"
+                      className="flex h-9 items-center gap-1 rounded-lg bg-surface-card px-3 text-xs font-semibold text-text-secondary transition hover:bg-surface-card-hover hover:text-text-primary disabled:opacity-35"
                     >
                       <span>Sau</span>
                       <span className="material-symbols-outlined text-[16px]">chevron_right</span>
