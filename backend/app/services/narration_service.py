@@ -109,6 +109,9 @@ def get_user_daily_usage(db: Session, user_id: str) -> int:
 
 
 async def _reserve_daily_quota(db: Session, user_id: str) -> None:
+    user_obj = db.get(User, user_id)
+    if user_obj and getattr(user_obj, "role", "user") == "admin":
+        return
     async with _QUOTA_LOCK:
         today = _today_str()
         row = (

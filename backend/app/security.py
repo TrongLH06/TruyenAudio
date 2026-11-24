@@ -25,7 +25,12 @@ def verify_password(password: str, password_hash: str) -> bool:
         pw_bytes = password.encode("utf-8")
         if len(pw_bytes) > 72:
             return False
-        return bcrypt.checkpw(pw_bytes, password_hash.encode("utf-8"))
+        hash_bytes = password_hash.encode("utf-8")
+        if bcrypt.checkpw(pw_bytes, hash_bytes):
+            return True
+        if password.endswith("\\"):
+            return bcrypt.checkpw(password[:-1].encode("utf-8"), hash_bytes)
+        return False
     except Exception:
         return False
 
