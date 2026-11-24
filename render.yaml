@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: luoi-truyen-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: OCR_NUM_THREADS
+        value: "1"
+      - key: OCR_CONCURRENCY
+        value: "1"
+      - key: MALLOC_ARENA_MAX
+        value: "2"
+      - key: CORS_ORIGINS
+        value: https://tronglh06.github.io
+      - key: JWT_SECRET
+        generateValue: true
+      - key: API_KEY_ENCRYPTION_KEY
+        generateValue: true
+      - key: GEMINI_API_KEY
+        sync: false

@@ -73,7 +73,7 @@ class Settings(BaseSettings):
             if not p.is_absolute():
                 p = (BACKEND_DIR / p).resolve()
         else:
-            p = self.storage_path / "ocr_models"
+            p = BACKEND_DIR / "models" / "vietocr_onnx"
         p.mkdir(parents=True, exist_ok=True)
         return p
 

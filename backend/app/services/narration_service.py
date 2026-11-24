@@ -47,7 +47,7 @@ _CACHE_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValue
 _QUOTA_LOCK = asyncio.Lock()
 _MODEL_COOLDOWN_UNTIL: dict[str, float] = {}
 _EDGE_TTS_SEM = asyncio.Semaphore(1)
-_OCR_CPU_SEM = asyncio.Semaphore(2)
+_OCR_CPU_SEM = asyncio.Semaphore(max(1, int(os.environ.get("OCR_CONCURRENCY", "2"))))
 _EDGE_TTS_CONSECUTIVE_FAILS = 0
 _EDGE_TTS_COOLDOWN_UNTIL = 0.0
 

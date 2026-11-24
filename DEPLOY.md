@@ -1,77 +1,46 @@
 # Hướng dẫn đưa web lên mạng miễn phí (không cần chạy ngầm trên máy)
 
-Kiến trúc triển khai tách làm 2 phần miễn phí 0 đồng:
-- **Backend (`backend/`)** chạy trên **Hugging Face Spaces** (gói Docker miễn phí `CPU basic • 16 GB RAM • 2 vCPU`, chạy được RapidOCR + VietOCR + giọng Google `gTTS` + Gemini).
-- **Frontend (`frontend/`)** build tĩnh tự động qua GitHub Actions và phát trên **GitHub Pages** (tải nhanh trên điện thoại, dùng HashRouter để không lỗi 404 khi tải lại trang).
+Kiến trúc triển khai tách làm 2 phần miễn phí 0 đồng, không cần thẻ ngân hàng:
+- **Backend (`backend/`)** chạy Docker trên **Render.com Free** (`512 MB RAM`): dùng `RapidOCR` + `VietOCR ONNX` thuần (không cài PyTorch) + giọng Google `gTTS` + tự dịch Gemini khi gặp truyện ngoại ngữ.
+- **Frontend (`frontend/`)** build tĩnh tự động qua GitHub Actions và phát trên **GitHub Pages** tại `https://tronglh06.github.io/TruyenAudio/`.
 
 ---
 
-## Phần 1: Đưa Backend lên Hugging Face Spaces
+## Phần 1: Đưa Backend lên Render.com Free
 
-1. Đăng nhập Hugging Face (`https://huggingface.co`), chọn **Create new -> Space**.
-   - **Space name**: ví dụ `luoi-truyen-api`
-   - **Select the Space SDK**: chọn **Docker -> Blank**
-   - **Space hardware**: giữ mặc định **CPU basic · 2 vCPU · 16 GB RAM (Free)**
-   - Chế độ hiển thị: nên để **Public** để frontend trên điện thoại gọi API và phát file MP3 không bị chặn token.
-
-2. Tạo sẵn 2 chuỗi bí mật ngẫu nhiên (ít nhất 32 ký tự, khác nhau) bằng PowerShell trên máy:
-   ```powershell
-   -join ((48..57 + 65..90 + 97..122) | Get-Random -Count 48 | ForEach-Object {[char]$_})
-   ```
-   Chạy lệnh trên 2 lần để lấy 2 chuỗi khác nhau cho `JWT_SECRET` và `API_KEY_ENCRYPTION_KEY`.
-
-3. Vào **Settings** của Space vừa tạo, mục **Variables and secrets**, thêm:
-   - **Secrets** (bắt buộc / bảo mật):
+1. Đăng nhập hoặc đăng ký tài khoản **Render** (`https://render.com`) bằng tài khoản GitHub `TrongLH06`.
+2. Trên Dashboard Render, chọn **New -> Blueprint** (hoặc **New -> Web Service**), kết nối tới repository `TrongLH06/TruyenAudio` (nhánh `main`).
+   - Nếu chọn **Blueprint**: Render tự đọc file `render.yaml` và `Dockerfile` đã cấu hình sẵn `plan: free`, `OCR_NUM_THREADS=1`, `OCR_CONCURRENCY=1`, `CORS_ORIGINS=https://tronglh06.github.io`, `JWT_SECRET` và `API_KEY_ENCRYPTION_KEY`.
+   - Nếu chọn **Web Service** thủ công: chọn Runtime **Docker**, Instance Type **Free ($0/month)**, giữ nguyên **Dockerfile Path** `./Dockerfile`, và điền các Environment Variables:
      - `APP_ENV` = `production`
-     - `JWT_SECRET` = `<chuỗi-48-ký-tự-thứ-1>`
-     - `API_KEY_ENCRYPTION_KEY` = `<chuỗi-48-ký-tự-thứ-2>`
-     - `GEMINI_API_KEY` = `<key-google-ai-studio>` (tùy chọn, dùng khi đọc chế độ AI hoặc tự dịch truyện ngoại ngữ)
-   - **Variables** (bắt buộc đúng origin GitHub Pages, **không có dấu `/` ở cuối và không kèm tên repo**):
-     - `CORS_ORIGINS` = `https://<ten-github-cua-ban>.github.io`
-     - Nếu muốn hỗ trợ thêm cả local khi test: `https://<ten-github-cua-ban>.github.io,http://localhost:5173,http://127.0.0.1:5173`
-
-4. Đẩy mã nguồn từ thư mục `d:\Agent\lazy-comic-reader` lên Space (file `backend/.env`, `backend/storage/`, `node_modules/` đã được `.gitignore` và `.dockerignore` loại trừ tự động):
-   ```powershell
-   cd d:\Agent\lazy-comic-reader
-   git init -b main
-   git add .
-   git commit -m "Setup Luoi Truyen for HF Spaces and GitHub Pages"
-   git remote add hf https://huggingface.co/spaces/<ten-hf-cua-ban>/luoi-truyen-api
-   git push -u hf main
-   ```
-   Khi Hugging Face hỏi mật khẩu Git, nhập **Access Token (Write)** lấy tại `https://huggingface.co/settings/tokens`.
-
-5. Chờ Space build xong (khoảng 3–5 phút cho lần đầu tải CPU PyTorch và đóng gói sẵn model OCR). Mở thử địa chỉ:
-   `https://<ten-hf-cua-ban>-luoi-truyen-api.hf.space/api/health`
-   Nếu thấy `"status": "ok"` và `"default_engine": "ocr"` là backend đã hoạt động.
+     - `CORS_ORIGINS` = `https://tronglh06.github.io` (không thêm `/TruyenAudio` và không có dấu `/` ở cuối)
+     - `OCR_NUM_THREADS` = `1`
+     - `OCR_CONCURRENCY` = `1`
+     - `MALLOC_ARENA_MAX` = `2`
+     - `JWT_SECRET` = chuỗi ngẫu nhiên ít nhất 32 ký tự
+     - `API_KEY_ENCRYPTION_KEY` = chuỗi ngẫu nhiên khác ít nhất 32 ký tự (khác `JWT_SECRET`)
+     - `GEMINI_API_KEY` = key Google AI Studio của bạn (tùy chọn, dùng khi dịch ngoại ngữ hoặc chế độ Kể chuyện AI)
+3. Bấm **Apply** / **Create Web Service** và chờ Render build Docker xong (thường mất 2–4 phút cho lần đầu).
+4. Sau khi trạng thái chuyển **Live**, sao chép địa chỉ service ở góc trên (dạng `https://luoi-truyen-api.onrender.com`) rồi mở thử `/api/health`:
+   `https://luoi-truyen-api.onrender.com/api/health`
+   Thấy `"status": "ok"` và `"default_engine": "ocr"` là backend đã sẵn sàng.
 
 ---
 
-## Phần 2: Đưa Frontend lên GitHub Pages
+## Phần 2: Bật Frontend trên GitHub Pages
 
-1. Tạo một repository mới trên GitHub (ví dụ `luoi-truyen`).
-
-2. Vào **Settings -> Pages** trong repository GitHub:
-   - Mục **Build and deployment -> Source**: chọn **GitHub Actions**.
-
-3. Vào **Settings -> Secrets and variables -> Actions -> tab Variables**, bấm **New repository variable**:
+1. Mở `https://github.com/TrongLH06/TruyenAudio/settings/pages`, tại mục **Build and deployment -> Source** chọn **GitHub Actions**.
+2. Mở `https://github.com/TrongLH06/TruyenAudio/settings/variables/actions`, bấm **New repository variable**:
    - **Name**: `VITE_API_BASE_URL`
-   - **Value**: `https://<ten-hf-cua-ban>-luoi-truyen-api.hf.space` (không có dấu `/` ở cuối)
-
-4. Đẩy code lên GitHub:
-   ```powershell
-   cd d:\Agent\lazy-comic-reader
-   git remote add origin https://github.com/<ten-github-cua-ban>/luoi-truyen.git
-   git push -u origin main
-   ```
-
-5. Vào tab **Actions** trên GitHub chờ workflow `Deploy Frontend to GitHub Pages` chạy xong (`frontend/dist` sẽ tự build và phát hành). Mở web trên điện thoại tại:
-   `https://<ten-github-cua-ban>.github.io/luoi-truyen/`
+   - **Value**: dán URL Render vừa tạo ở Phần 1 (ví dụ `https://luoi-truyen-api.onrender.com`, không có dấu `/` ở cuối).
+3. Vào tab **Actions** trên GitHub -> chọn workflow `Deploy Frontend to GitHub Pages` -> bấm **Run workflow** (hoặc đẩy commit mới lên `main`).
+4. Khi workflow chạy xong màu xanh, mở web trên điện thoại tại:
+   `https://tronglh06.github.io/TruyenAudio/`
 
 ---
 
-## Lưu ý khi vận hành miễn phí
+## Lưu ý khi vận hành Render Free
 
-- **Tự ngủ sau 48 giờ không có truy cập**: Gói miễn phí của Hugging Face Spaces sẽ tạm ngủ nếu 48 tiếng không có request; lần đầu mở lại mất khoảng 20–40 giây để khởi động container rồi sau đó chạy bình thường.
-- **Dữ liệu và cache trên đĩa**: Khi Space rebuild hoặc khởi động lại sau khi ngủ, dữ liệu SQLite (`storage/app.db`) và cache MP3 tạm trên Space sẽ tạo mới lại (các model VietOCR/RapidOCR đã được đóng gói sẵn trong Docker image nên không phải tải lại). Lịch sử đọc truyện và cài đặt trên điện thoại vẫn được giữ nguyên trong `localStorage` của trình duyệt.
-- **Chạy local vẫn giữ nguyên**: Ở máy cá nhân, không đặt `VITE_API_BASE_URL`, frontend tiếp tục gọi trực tiếp `/api` qua Vite proxy tới `http://127.0.0.1:8000`.
+- **Tự ngủ sau 15 phút không có truy cập**: Gói miễn phí của Render cho container ngủ khi không có người dùng sau 15 phút; lần mở lại đầu tiên mất khoảng 40–50 giây để backend khởi động lại rồi hoạt động bình thường.
+- **Dữ liệu và cache trên đĩa**: Khi Render ngủ/deploy lại, database SQLite và cache MP3 tạm trên server sẽ tạo mới lại (model `VietOCR ONNX` đã đóng gói sẵn trong repo/Docker nên không phải tải lại). Lịch sử đọc và cài đặt trên điện thoại vẫn được giữ nguyên trong `localStorage` của trình duyệt.
+- **Chạy local vẫn giữ nguyên**: Ở máy cá nhân, không đặt `VITE_API_BASE_URL`, frontend tiếp tục gọi `/api` qua Vite proxy tới `http://127.0.0.1:8000`.

@@ -3,37 +3,28 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 import io
+import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
 import threading
 import unicodedata
 
-import httpx
 import numpy as np
+import onnxruntime as ort
 from PIL import Image
 from rapidocr import EngineType, LangDet, ModelType, OCRVersion, RapidOCR
-import torch
-from vietocr.tool.translate import build_model, process_input, translate
-import yaml
 
 from ..config import settings
-
-# Pillow >= 10 removed Image.ANTIALIAS, still referenced in older VietOCR utilities
-if not hasattr(Image, "ANTIALIAS"):
-    Image.ANTIALIAS = Image.Resampling.LANCZOS  # type: ignore[attr-defined]
 
 logger = logging.getLogger(__name__)
 
 _OCR_LOCK = threading.Lock()
 _DET_ENGINE: RapidOCR | None = None
 _FOREIGN_OCR_ENGINE: RapidOCR | None = None
-_VIETOCR_BUNDLE: tuple[object, object, dict] | None = None
-
-_VIETOCR_CONFIG_URL_BASE = "https://vocr.vn/data/vietocr/config/base.yml"
-_VIETOCR_CONFIG_URL_SEQ2SEQ = "https://vocr.vn/data/vietocr/config/vgg-seq2seq.yml"
-_VIETOCR_WEIGHTS_URL = "https://vocr.vn/data/vietocr/vgg_seq2seq.pth"
+_VIETOCR_ONNX: tuple[ort.InferenceSession, ort.InferenceSession, _VietOcrVocab, dict] | None = None
 
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
 _VIET_DIACRITICS = set(
@@ -87,41 +78,47 @@ class _OcrBox:
         return (self.x1 + self.x2) * 0.5
 
 
+class _VietOcrVocab:
+    """Minimal character vocabulary matching VietOCR token indices."""
+
+    def __init__(self, chars: str) -> None:
+        self.pad = 0
+        self.go = 1
+        self.eos = 2
+        self.mask_token = 3
+        self.i2c = {i + 4: c for i, c in enumerate(chars)}
+        self.i2c[0] = "<pad>"
+        self.i2c[1] = "<sos>"
+        self.i2c[2] = "<eos>"
+        self.i2c[3] = "*"
+
+    def decode(self, ids: list[int]) -> str:
+        first = 1 if self.go in ids else 0
+        last = ids.index(self.eos) if self.eos in ids else None
+        return "".join(self.i2c.get(i, "") for i in ids[first:last])
+
+    def batch_decode(self, arr: list[list[int]]) -> list[str]:
+        return [self.decode(ids) for ids in arr]
+
+
+def _get_num_threads() -> int:
+    try:
+        return max(1, int(os.environ.get("OCR_NUM_THREADS", "2")))
+    except ValueError:
+        return 2
+
+
+def _build_ort_session_options() -> ort.SessionOptions:
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = _get_num_threads()
+    opts.inter_op_num_threads = 1
+    opts.enable_mem_pattern = False
+    opts.enable_cpu_mem_arena = False
+    return opts
+
+
 def _models_dir() -> Path:
     return settings.ocr_models_path
-
-
-def _ensure_vietocr_assets() -> tuple[dict, Path]:
-    model_dir = _models_dir()
-    cfg_path = model_dir / "vgg_seq2seq_config.yaml"
-    weights_path = model_dir / "vgg_seq2seq.pth"
-
-    if not cfg_path.is_file():
-        with httpx.Client(timeout=20.0, follow_redirects=True) as client:
-            base = yaml.safe_load(client.get(_VIETOCR_CONFIG_URL_BASE).text)
-            spec = yaml.safe_load(client.get(_VIETOCR_CONFIG_URL_SEQ2SEQ).text)
-        base.update(spec)
-        base["device"] = "cpu"
-        base.setdefault("cnn", {})["pretrained"] = False
-        tmp_cfg = cfg_path.with_suffix(".tmp")
-        tmp_cfg.write_text(yaml.safe_dump(base, allow_unicode=True), encoding="utf-8")
-        os.replace(tmp_cfg, cfg_path)
-
-    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    cfg["device"] = "cpu"
-    cfg.setdefault("cnn", {})["pretrained"] = False
-
-    if not weights_path.is_file() or weights_path.stat().st_size < 10_000_000:
-        tmp_w = weights_path.with_suffix(".tmp")
-        with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-            with client.stream("GET", _VIETOCR_WEIGHTS_URL) as resp:
-                resp.raise_for_status()
-                with open(tmp_w, "wb") as f:
-                    for chunk in resp.iter_bytes(65536):
-                        f.write(chunk)
-        os.replace(tmp_w, weights_path)
-
-    return cfg, weights_path
 
 
 def _get_det_engine() -> RapidOCR:
@@ -136,6 +133,9 @@ def _get_det_engine() -> RapidOCR:
                     "Global.use_det": True,
                     "Global.use_cls": False,
                     "Global.use_rec": False,
+                    "EngineConfig.onnxruntime.intra_op_num_threads": _get_num_threads(),
+                    "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+                    "EngineConfig.onnxruntime.enable_cpu_mem_arena": False,
                     "Det.engine_type": EngineType.ONNXRUNTIME,
                     "Det.ocr_version": OCRVersion.PPOCRV5,
                     "Det.lang_type": LangDet.CH,
@@ -157,6 +157,9 @@ def _get_foreign_ocr_engine() -> RapidOCR:
             _FOREIGN_OCR_ENGINE = RapidOCR(
                 params={
                     "Global.use_cls": False,
+                    "EngineConfig.onnxruntime.intra_op_num_threads": _get_num_threads(),
+                    "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+                    "EngineConfig.onnxruntime.enable_cpu_mem_arena": False,
                     "Det.engine_type": EngineType.ONNXRUNTIME,
                     "Det.ocr_version": OCRVersion.PPOCRV6,
                     "Det.model_type": ModelType.SMALL,
@@ -170,50 +173,119 @@ def _get_foreign_ocr_engine() -> RapidOCR:
     return _FOREIGN_OCR_ENGINE
 
 
-def _get_vietocr_predictor() -> tuple[object, object, dict]:
-    """Lazy thread-safe VietOCR vgg_seq2seq recognizer on CPU."""
-    global _VIETOCR_BUNDLE
-    if _VIETOCR_BUNDLE is not None:
-        return _VIETOCR_BUNDLE
+def _get_vietocr_onnx() -> tuple[ort.InferenceSession, ort.InferenceSession, _VietOcrVocab, dict]:
+    """Lazy thread-safe VietOCR vgg_seq2seq ONNX Runtime sessions on CPU."""
+    global _VIETOCR_ONNX
+    if _VIETOCR_ONNX is not None:
+        return _VIETOCR_ONNX
     with _OCR_LOCK:
-        if _VIETOCR_BUNDLE is None:
-            cfg, weights_path = _ensure_vietocr_assets()
-            model, vocab = build_model(cfg)
-            state = torch.load(weights_path, map_location="cpu", weights_only=False)
-            model.load_state_dict(state)
-            model.eval()
-            _VIETOCR_BUNDLE = (model, vocab, cfg)
-    return _VIETOCR_BUNDLE
+        if _VIETOCR_ONNX is None:
+            model_dir = _models_dir()
+            cfg_path = model_dir / "vietocr_config.json"
+            enc_path = model_dir / "vietocr_encoder.onnx"
+            dec_path = model_dir / "vietocr_decoder.onnx"
+            for required in (cfg_path, enc_path, dec_path):
+                if not required.is_file():
+                    raise FileNotFoundError(f"Thiếu file model VietOCR ONNX: {required}")
+
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            vocab = _VietOcrVocab(cfg["vocab"])
+            opts = _build_ort_session_options()
+            enc_sess = ort.InferenceSession(
+                str(enc_path),
+                sess_options=opts,
+                providers=["CPUExecutionProvider"],
+            )
+            dec_sess = ort.InferenceSession(
+                str(dec_path),
+                sess_options=opts,
+                providers=["CPUExecutionProvider"],
+            )
+            _VIETOCR_ONNX = (enc_sess, dec_sess, vocab, cfg)
+    return _VIETOCR_ONNX
+
+
+def _process_crop_numpy(crop: Image.Image, h: int, min_w: int, max_w: int) -> np.ndarray:
+    rgb = crop.convert("RGB")
+    orig_w, orig_h = rgb.size
+    new_w = int(h * float(orig_w) / float(max(1, orig_h)))
+    new_w = math.ceil(new_w / 10) * 10
+    new_w = max(min_w, min(max_w, new_w))
+    resized = rgb.resize((new_w, h), Image.Resampling.LANCZOS)
+    return np.asarray(resized, dtype=np.float32).transpose(2, 0, 1) / 255.0
+
+
+def _translate_batch_onnx(
+    batch_np: np.ndarray,
+    enc_sess: ort.InferenceSession,
+    dec_sess: ort.InferenceSession,
+    max_seq_length: int = 128,
+    sos_token: int = 1,
+    eos_token: int = 2,
+) -> list[list[int]]:
+    enc_out, hidden = enc_sess.run(None, {"img": batch_np})
+    bsz = batch_np.shape[0]
+    tgt = np.full((bsz,), sos_token, dtype=np.int64)
+    tokens = np.zeros((bsz, max_seq_length + 1), dtype=np.int64)
+    tokens[:, 0] = sos_token
+    finished = np.zeros((bsz,), dtype=bool)
+    seq_len = 1
+
+    for step in range(max_seq_length):
+        logits, hidden = dec_sess.run(
+            None,
+            {
+                "tgt": tgt,
+                "hidden": hidden,
+                "encoder_outputs": enc_out,
+            },
+        )
+        nxt = np.argmax(logits, axis=-1).astype(np.int64)
+        tokens[:, step + 1] = nxt
+        seq_len = step + 2
+        finished |= nxt == eos_token
+        if bool(np.all(finished)):
+            break
+        tgt = nxt
+
+    return tokens[:, :seq_len].tolist()
 
 
 def _predict_lines_batch(crops: list[Image.Image]) -> list[str]:
     if not crops:
         return []
-    model, vocab, cfg = _get_vietocr_predictor()
-    ds = cfg["dataset"]
-    h = int(ds["image_height"])
-    min_w = int(ds["image_min_width"])
-    max_w = int(ds["image_max_width"])
+    enc_sess, dec_sess, vocab, cfg = _get_vietocr_onnx()
+    h = int(cfg["image_height"])
+    min_w = int(cfg["image_min_width"])
+    max_w = int(cfg["image_max_width"])
+    sos = int(cfg.get("sos_token", 1))
+    eos = int(cfg.get("eos_token", 2))
 
-    bucket: dict[int, list[torch.Tensor]] = defaultdict(list)
+    bucket: dict[int, list[np.ndarray]] = defaultdict(list)
     bucket_idx: dict[int, list[int]] = defaultdict(list)
     outputs = [""] * len(crops)
 
     for idx, crop in enumerate(crops):
-        tensor = process_input(crop, h, min_w, max_w)
-        width_key = int(tensor.shape[-1])
-        bucket[width_key].append(tensor)
+        arr = _process_crop_numpy(crop, h, min_w, max_w)
+        width_key = int(arr.shape[-1])
+        bucket[width_key].append(arr)
         bucket_idx[width_key].append(idx)
 
-    with torch.inference_mode():
-        for width_key, tensors in bucket.items():
-            orig_indices = bucket_idx[width_key]
-            for start in range(0, len(tensors), 16):
-                batch = torch.cat(tensors[start : start + 16], 0)
-                sent_ids, _ = translate(batch, model)
-                decoded = vocab.batch_decode(sent_ids.tolist())
-                for orig_idx, text in zip(orig_indices[start : start + 16], decoded):
-                    outputs[orig_idx] = (text or "").strip()
+    for width_key, arrs in bucket.items():
+        orig_indices = bucket_idx[width_key]
+        for start in range(0, len(arrs), 8):
+            batch = np.stack(arrs[start : start + 8], axis=0)
+            sent_ids = _translate_batch_onnx(
+                batch,
+                enc_sess,
+                dec_sess,
+                max_seq_length=128,
+                sos_token=sos,
+                eos_token=eos,
+            )
+            decoded = vocab.batch_decode(sent_ids)
+            for orig_idx, text in zip(orig_indices[start : start + 8], decoded):
+                outputs[orig_idx] = (text or "").strip()
     return outputs
 
 

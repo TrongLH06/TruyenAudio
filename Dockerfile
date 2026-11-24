@@ -1,4 +1,4 @@
-# Hugging Face Spaces Docker image for Lười Truyện Backend (OCR + TTS + AI)
+# Lightweight Render Free Docker image for Lười Truyện Backend (Pure ONNX OCR + Google gTTS + AI)
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,26 +15,23 @@ RUN python -m venv /home/user/.venv
 ENV PATH="/home/user/.venv/bin:$PATH"
 
 COPY --chown=user:user backend/requirements.txt ./
-
-# Install CPU-only PyTorch first, then remaining deps without pulling GPU torch or vietocr pins
-RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision \
-    && grep -ivE '^(torch|torchvision|vietocr)([><=~! ]|$)' requirements.txt > /tmp/requirements-base.txt \
-    && pip install --no-cache-dir -r /tmp/requirements-base.txt \
-    && rm -f /tmp/requirements-base.txt \
-    && pip install --no-cache-dir --no-deps vietocr==0.3.13
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=user:user backend/ ./
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=7860 \
+    MALLOC_ARENA_MAX=2 \
+    OCR_NUM_THREADS=1 \
+    OCR_CONCURRENCY=1 \
+    PORT=10000 \
     STORAGE_DIR=/home/user/app/backend/storage \
-    OCR_MODELS_DIR=/home/user/ocr_models \
+    OCR_MODELS_DIR=/home/user/app/backend/models/vietocr_onnx \
     DATABASE_URL=sqlite:////home/user/app/backend/storage/app.db
 
-RUN mkdir -p /home/user/app/backend/storage /home/user/ocr_models \
+RUN mkdir -p /home/user/app/backend/storage \
     && python scripts/prefetch_ocr_models.py
 
-EXPOSE 7860
+EXPOSE 10000
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-7860}"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1"]

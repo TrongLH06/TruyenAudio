@@ -1,13 +1,3 @@
----
-title: Luoi Truyen API
-emoji: 📖
-colorFrom: indigo
-colorTo: green
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # Lười Truyện (TruyenAudio) — Web Đọc Truyện Tranh Tự Lướt & Thuyết Minh AI
 
 Ứng dụng web đọc truyện tranh tối ưu cho trải nghiệm rảnh tay: tự động cuộn mượt khớp thời lượng giọng đọc Google miễn phí (`gTTS`), AI Gemini đọc ảnh tạo kịch bản theo 2 chế độ (**Thuyết minh kể chuyện** và **Đọc sát thoại**), tự dịch truyện Anh/Nhật/Hàn sang tiếng Việt, kèm phụ đề và hẹn giờ tắt.
@@ -46,11 +36,11 @@ npm run dev
 Mở trình duyệt tại `http://localhost:5173`.
 
 ## Đóng gói & Đưa lên mạng miễn phí (không cần bật máy)
-- Xem hướng dẫn chi tiết từng bước tại [DEPLOY.md](DEPLOY.md) (Frontend trên **GitHub Pages**, Backend OCR + Giọng Google chạy Docker miễn phí 16 GB RAM trên **Hugging Face Spaces**).
+- Xem hướng dẫn chi tiết từng bước tại [DEPLOY.md](DEPLOY.md) (Frontend trên **GitHub Pages**, Backend OCR ONNX thuần + Giọng Google chạy Docker miễn phí 512 MB RAM trên **Render.com**, không cần PyTorch).
 
 ```bash
 docker build -t truyen-audio .
-docker run -p 7860:7860 \
+docker run -p 10000:10000 \
   -e APP_ENV=production \
   -e JWT_SECRET="your-32-char-random-jwt-secret-here" \
   -e API_KEY_ENCRYPTION_KEY="your-separate-32-char-encryption-key" \
