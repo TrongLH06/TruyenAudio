@@ -37,7 +37,7 @@ from ..schemas import (
     PageNarrationResponse,
 )
 from ..security import decrypt_api_key
-from .external_comics import fetch_proxied_image
+from .external_comics import fetch_proxied_image, get_mangadex_chapter_language
 from .ocr_service import extract_comic_page_text, needs_vietnamese_translation
 
 logger = logging.getLogger(__name__)
@@ -1195,10 +1195,25 @@ async def _translate_ocr_batch_async(
     raise last_err
 
 
-async def _extract_ocr_page_text(canonical_img_url: str, source_type: str) -> str:
+async def _extract_ocr_page_text(
+    canonical_img_url: str,
+    source_type: str,
+    chapter_id: str = "",
+) -> tuple[str, str]:
     raw_bytes = await _load_image_bytes(canonical_img_url)
+    chapter_lang = (
+        await get_mangadex_chapter_language(chapter_id)
+        if source_type == "mangadex" and chapter_id
+        else "vi"
+    )
     async with _OCR_CPU_SEM:
-        return await asyncio.to_thread(extract_comic_page_text, raw_bytes, source_type)
+        text = await asyncio.to_thread(
+            extract_comic_page_text,
+            raw_bytes,
+            source_type,
+            chapter_lang,
+        )
+    return text, chapter_lang
 
 
 async def generate_or_get_page_narration(
@@ -1293,9 +1308,13 @@ async def generate_or_get_page_narration(
             return await _resolve_cached_response(cached)
 
         if engine == "ocr":
-            script_text = await _extract_ocr_page_text(canonical_img_url, req.source_type)
+            script_text, chapter_lang = await _extract_ocr_page_text(
+                canonical_img_url,
+                req.source_type,
+                req.chapter_id,
+            )
             translated = False
-            if needs_vietnamese_translation(script_text, req.source_type):
+            if needs_vietnamese_translation(script_text, req.source_type, chapter_lang=chapter_lang):
                 api_key, using_server_key = await _resolve_optional_ai_key(db, user)
                 if api_key:
                     try:
@@ -1653,17 +1672,27 @@ async def generate_or_get_batch_narration(
     if engine == "ocr":
         ai_calls = 0
         translated_indices: set[int] = set()
-        extracted_texts = await asyncio.gather(
-            *[_extract_ocr_page_text(url, req.source_type) for _, url, _ in uncached_entries]
+        extracted_results = await asyncio.gather(
+            *[
+                _extract_ocr_page_text(url, req.source_type, req.chapter_id)
+                for _, url, _ in uncached_entries
+            ]
         )
         scripts_map = {
-            p_idx: txt for (p_idx, _, _), txt in zip(uncached_entries, extracted_texts)
+            p_idx: txt for (p_idx, _, _), (txt, _) in zip(uncached_entries, extracted_results)
+        }
+        chapter_langs_map = {
+            p_idx: ch_lang for (p_idx, _, _), (_, ch_lang) in zip(uncached_entries, extracted_results)
         }
 
         foreign_pages = {
             p_idx: txt
             for p_idx, txt in scripts_map.items()
-            if needs_vietnamese_translation(txt, req.source_type)
+            if needs_vietnamese_translation(
+                txt,
+                req.source_type,
+                chapter_lang=chapter_langs_map.get(p_idx, ""),
+            )
         }
         if foreign_pages:
             api_key, using_server_key = await _resolve_optional_ai_key(db, user)

@@ -421,7 +421,11 @@ def _cluster_and_format_bubbles(boxes: list[_OcrBox]) -> str:
     return combined
 
 
-def extract_comic_page_text(raw_bytes: bytes, source_type: str = "hinettruyen") -> str:
+def extract_comic_page_text(
+    raw_bytes: bytes,
+    source_type: str = "hinettruyen",
+    chapter_lang: str = "",
+) -> str:
     """Extract speech-bubble comic text locally without cloud AI."""
     with Image.open(io.BytesIO(raw_bytes)) as img:
         rgb = img.convert("RGB")
@@ -437,7 +441,10 @@ def extract_comic_page_text(raw_bytes: bytes, source_type: str = "hinettruyen") 
     overlap = 140
     boxes: list[_OcrBox] = []
 
-    if source_type == "mangadex":
+    norm_lang = chapter_lang.strip().lower()
+    use_foreign_cjk_ocr = source_type == "mangadex" and norm_lang not in ("vi", "en")
+
+    if use_foreign_cjk_ocr:
         engine = _get_foreign_ocr_engine()
         y = 0
         while y < h:
@@ -503,7 +510,7 @@ def extract_comic_page_text(raw_bytes: bytes, source_type: str = "hinettruyen") 
     return _cluster_and_format_bubbles(deduped)
 
 
-def needs_vietnamese_translation(text: str, source_type: str) -> bool:
+def needs_vietnamese_translation(text: str, source_type: str, chapter_lang: str = "") -> bool:
     """Detect whether OCR-extracted text is in a foreign language requiring AI translation."""
     cleaned = (text or "").strip()
     if not cleaned:
@@ -517,7 +524,8 @@ def needs_vietnamese_translation(text: str, source_type: str) -> bool:
         return False
 
     viet_count = sum(1 for ch in letters if ch in _VIET_DIACRITICS)
-    if source_type == "mangadex":
+    norm_lang = chapter_lang.strip().lower()
+    if source_type == "mangadex" and norm_lang != "vi":
         return len(letters) >= 6 and (viet_count / len(letters)) < 0.04
 
     words = [w for w in re.split(r"\s+", cleaned) if any(ch.isalpha() for ch in w)]
